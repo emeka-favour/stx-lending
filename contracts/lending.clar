@@ -83,3 +83,106 @@
     (/ (* collateral u100) debt)
   )
 )
+
+;; Update User Position
+(define-private (update-user-position
+    (user principal)
+    (collateral-delta uint)
+    (is-collateral-increase bool)
+    (borrow-delta uint)
+    (is-borrow-increase bool)
+  )
+  (let (
+      (current-position (default-to {
+        total-collateral: u0,
+        total-borrowed: u0,
+        loan-count: u0,
+      }
+        (map-get? user-positions { user: user })
+      ))
+      (new-collateral (if is-collateral-increase
+        (+ (get total-collateral current-position) collateral-delta)
+        (- (get total-collateral current-position) collateral-delta)
+      ))
+      (new-borrowed (if is-borrow-increase
+        (+ (get total-borrowed current-position) borrow-delta)
+        (- (get total-borrowed current-position) borrow-delta)
+      ))
+    )
+    (map-set user-positions { user: user } {
+      total-collateral: new-collateral,
+      total-borrowed: new-borrowed,
+      loan-count: (get loan-count current-position),
+    })
+  )
+)
+
+;; Public Functions - Core Protocol Operations
+;; Deposit STX as Collateral
+(define-public (deposit)
+  (let ((amount (stx-get-balance tx-sender)))
+    (if (> amount u0)
+      (begin
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        (var-set total-deposits (+ (var-get total-deposits) amount))
+        (update-user-position tx-sender amount true u0 true)
+        (ok amount)
+      )
+      ERR-INVALID-AMOUNT
+    )
+  )
+)
+
+;; Borrow STX Against Collateral
+(define-public (borrow (amount uint))
+  (let (
+      (user-pos (default-to {
+        total-collateral: u0,
+        total-borrowed: u0,
+        loan-count: u0,
+      }
+        (map-get? user-positions { user: tx-sender })
+      ))
+      (collateral (get total-collateral user-pos))
+      (current-borrowed (get total-borrowed user-pos))
+    )
+    (if (and
+        (> amount u0)
+        (>= (get-collateral-ratio collateral (+ current-borrowed amount))
+          (var-get minimum-collateral-ratio)
+        )
+      )
+      (begin
+        (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+        (var-set total-borrows (+ (var-get total-borrows) amount))
+        (update-user-position tx-sender u0 true amount true)
+        (ok amount)
+      )
+      ERR-INSUFFICIENT-COLLATERAL
+    )
+  )
+)
+
+;; Repay Borrowed STX
+(define-public (repay (amount uint))
+  (let (
+      (user-pos (default-to {
+        total-collateral: u0,
+        total-borrowed: u0,
+        loan-count: u0,
+      }
+        (map-get? user-positions { user: tx-sender })
+      ))
+      (current-borrowed (get total-borrowed user-pos))
+    )
+    (if (<= amount current-borrowed)
+      (begin
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        (var-set total-borrows (- (var-get total-borrows) amount))
+        (update-user-position tx-sender u0 true amount false)
+        (ok amount)
+      )
+      ERR-INVALID-AMOUNT
+    )
+  )
+)
